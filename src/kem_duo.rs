@@ -110,21 +110,12 @@ impl ProductKeyKEM {
             let m = Com1::<Bls12_381>((c.0.into_group() * rho).into_affine(), (c.1.into_group() * rho).into_affine());
             let mut out = Vec::new(); m.serialize_compressed(&mut out).unwrap(); d2_inst.push(out);
         }
-
-        let c1_coms: Vec<Com1<Bls12_381>> = attestation_commitments_g1
-            .iter()
-            .map(|b| Com1::<Bls12_381>::deserialize_compressed(b.as_slice()).unwrap())
-            .collect();
-        let c2_coms: Vec<Com2<Bls12_381>> = attestation_commitments_g2
-            .iter()
-            .map(|b| Com2::<Bls12_381>::deserialize_compressed(b.as_slice()).unwrap())
-            .collect();
-        let v_inst_r = deserialize_masked_v(&d1_inst)
-            .map_err(|e| KEMError::Deserialization(format!("V_inst^ρ deser: {}", e)))?;
-        let u_inst_r = deserialize_masked_u(&d2_inst)
-            .map_err(|e| KEMError::Deserialization(format!("U_inst^ρ deser: {}", e)))?;
-        let pk = ComT::<Bls12_381>::pairing_sum(&c1_coms, &v_inst_r)
-            + ComT::<Bls12_381>::pairing_sum(&u_inst_r, &c2_coms);
+        let v_inst_r = deserialize_masked_v(&d1_inst).map_err(|e| KEMError::Deserialization(format!("V_inst^ρ deser: {}", e)))?;
+        let u_inst_r = deserialize_masked_u(&d2_inst).map_err(|e| KEMError::Deserialization(format!("U_inst^ρ deser: {}", e)))?;
+        let u_masked_r = deserialize_masked_u(&base.d1_masks).map_err(|e| KEMError::Deserialization(format!("U^ρ deser: {}", e)))?;
+        let v_masked_r = deserialize_masked_v(&base.d2_masks).map_err(|e| KEMError::Deserialization(format!("V^ρ deser: {}", e)))?;
+        // Proof-agnostic K2: only masks (no C1/C2)
+        let pk = ComT::<Bls12_381>::pairing_sum(&u_inst_r, &v_masked_r) + ComT::<Bls12_381>::pairing_sum(&u_masked_r, &v_inst_r);
         let k2 = kdf_from_comt(&pk, ctx_hash, gs_instance_digest, vk_hash, x_hash, b"pk2", 1);
         let rho_bytes = rho.into_bigint().to_bytes_be();
         let mut ad2 = Vec::new();
@@ -187,20 +178,11 @@ impl ProductKeyKEM {
 
         // Phase-A ρ recovery (K2)
         if !kem_share.d1_inst.is_empty() && !kem_share.d2_inst.is_empty() && !kem_share.ct_rho.is_empty() {
-            let c1_coms: Vec<Com1<Bls12_381>> = attestation_commitments_g1
-                .iter()
-                .map(|b| Com1::<Bls12_381>::deserialize_compressed(b.as_slice()).unwrap())
-                .collect();
-            let c2_coms: Vec<Com2<Bls12_381>> = attestation_commitments_g2
-                .iter()
-                .map(|b| Com2::<Bls12_381>::deserialize_compressed(b.as_slice()).unwrap())
-                .collect();
-            let v_inst = deserialize_masked_v(&kem_share.d1_inst)
-                .map_err(|e| KEMError::Deserialization(format!("V_inst^ρ deser: {}", e)))?;
-            let u_inst = deserialize_masked_u(&kem_share.d2_inst)
-                .map_err(|e| KEMError::Deserialization(format!("U_inst^ρ deser: {}", e)))?;
-            let pk = ComT::<Bls12_381>::pairing_sum(&c1_coms, &v_inst)
-                + ComT::<Bls12_381>::pairing_sum(&u_inst, &c2_coms);
+            let v_inst = deserialize_masked_v(&kem_share.d1_inst).map_err(|e| KEMError::Deserialization(format!("V_inst^ρ deser: {}", e)))?;
+            let u_inst = deserialize_masked_u(&kem_share.d2_inst).map_err(|e| KEMError::Deserialization(format!("U_inst^ρ deser: {}", e)))?;
+            let u_masked = deserialize_masked_u(&kem_share.d1_masks).map_err(|e| KEMError::Deserialization(format!("U^ρ deser: {}", e)))?;
+            let v_masked = deserialize_masked_v(&kem_share.d2_masks).map_err(|e| KEMError::Deserialization(format!("V^ρ deser: {}", e)))?;
+            let pk = ComT::<Bls12_381>::pairing_sum(&u_inst, &v_masked) + ComT::<Bls12_381>::pairing_sum(&u_masked, &v_inst);
             let k2 = kdf_from_comt(&pk, ctx_hash, gs_instance_digest, vk_hash, x_hash, b"pk2", 1);
             let mut ad2 = Vec::new();
             ad2.extend_from_slice(&kem_share.index.to_be_bytes());
