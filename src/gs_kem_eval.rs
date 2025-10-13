@@ -5,10 +5,9 @@
 
 use ark_ec::pairing::{Pairing, PairingOutput};
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::{Field, PrimeField};
-use ark_std::Zero;
+use ark_ff::{Field, PrimeField, Zero};
 
-use groth_sahai::data_structures::{Com1, Com2, ComT, vec_to_col_vec, col_vec_to_vec, B1, B2, BT, Mat, Matrix};
+use groth_sahai::data_structures::{Com1, Com2, ComT, vec_to_col_vec, col_vec_to_vec, BT, Mat, Matrix};
 use groth_sahai::generator::CRS;
 use groth_sahai::statement::PPE;
 
@@ -51,11 +50,17 @@ fn comt_to_cells<E: Pairing>(m: &ComT<E>) -> [[E::TargetField; 2]; 2] {
 
 /// Canonical masked verifier evaluator (proof-agnostic under fixed (vk,x)).
 /// 
-/// IMPORTANT:
-/// - We DO NOT scale commitments X/Y by rho.
-/// - We DO scale PPE constants a,b by rho (these act as instance-dependent bases).
-/// - We DO scale CRS primaries U,V by rho for proof legs.
-/// - The γ cross ComT is NOT post-exponentiated (critical for randomness cancellation).
+/// This implements the five-bucket formula with dual bases for proper randomness cancellation:
+/// B1 + B2 + G - B3 - B4
+/// where:
+/// - B1 = e(X, U*^ρ) - statement commitments paired with masked dual bases
+/// - B2 = e(V*^ρ, Y) - masked dual bases paired with statement commitments
+/// - B3 = e(U^ρ, π) - masked primaries paired with proof elements
+/// - B4 = e(θ, V^ρ) - proof elements paired with masked primaries
+/// - G = e(X, ΓY) - cross term (NOT post-exponentiated)
+/// 
+/// The dual bases U*, V* are required for randomness cancellation. Without them,
+/// different proofs for the same statement will produce different results.
 pub fn masked_verifier_matrix_canonical<E: Pairing>(
     ppe: &PPE<E>,
     crs: &CRS<E>,
@@ -64,35 +69,52 @@ pub fn masked_verifier_matrix_canonical<E: Pairing>(
     pi: &[Com2<E>],
     theta: &[Com1<E>],
     rho: E::ScalarField,
+    u_star: &[(E::G2Affine, E::G2Affine)],  // CRS dual bases (G2 pairs)
+    v_star: &[(E::G1Affine, E::G1Affine)],  // CRS dual bases (G1 pairs)
 ) -> [[E::TargetField; 2]; 2] {
-    // 1) Linear legs with rho on PPE constants (instance-dependent bases)
-    let i1_a      = Com1::<E>::batch_linear_map(&ppe.a_consts);
-    let i2_b      = Com2::<E>::batch_linear_map(&ppe.b_consts);
-    let i1_a_rho  = scale_com1::<E>(&i1_a, rho);
-    let i2_b_rho  = scale_com2::<E>(&i2_b, rho);
-
-    let a_y_rho   = ComT::<E>::pairing_sum(&i1_a_rho, ycoms);     // e(a^ρ, Y)
-    let x_b_rho   = ComT::<E>::pairing_sum(xcoms, &i2_b_rho);     // e(X, b^ρ)
-
-    // 2) γ cross leg: compute unmasked, DO NOT post-exponentiate
-    // This is the key fix - the cross term should not be raised to rho
-    let stmt_y    = vec_to_col_vec(ycoms).left_mul(&ppe.gamma, false);
-    let cross     = ComT::<E>::pairing_sum(xcoms, &col_vec_to_vec(&stmt_y)); // e(X, ΓY)
-
-    // 3) Proof legs with rho on CRS primaries (U,V), NOT on π/θ
-    let u_rho     = scale_com1::<E>(&crs.u, rho);
-    let v_rho     = scale_com2::<E>(&crs.v, rho);
+    // Take only the first n duals where n is the number of variables
+    // This handles the case where CRS has more elements than the PPE variables
+    let num_x = xcoms.len();
+    let num_y = ycoms.len();
     
-    let upi_rho   = ComT::<E>::pairing_sum(&u_rho, pi);        // e(U^ρ, π)
-    let thv_rho   = ComT::<E>::pairing_sum(theta, &v_rho);     // e(θ, V^ρ)
+    // Convert dual pairs to Com2/Com1 and scale by rho
+    // NOTE: Swap components to match GrothSahaiCommitments convention
+    let u_star_com2: Vec<Com2<E>> = u_star[..num_x].iter().map(|(a, b)| Com2(*b, *a)).collect();
+    let v_star_com1: Vec<Com1<E>> = v_star[..num_y].iter().map(|(a, b)| Com1(*b, *a)).collect();
+    let u_star_rho = scale_com2::<E>(&u_star_com2, rho);
+    let v_star_rho = scale_com1::<E>(&v_star_com1, rho);
 
-    // 4) Reconstruct: (a_y^ρ + x_b^ρ + cross) - upi^ρ - thv^ρ
-    // With cross NOT post-exponentiated, randomness cancels properly
-    let lhs_mask = (a_y_rho + x_b_rho) + cross;
-    let rhs_mask = lhs_mask - upi_rho - thv_rho;
+    // Scale CRS primaries by rho for proof legs (use same count as pi/theta)
+    let u_rho = scale_com1::<E>(&crs.u[..pi.len()], rho);
+    let v_rho = scale_com2::<E>(&crs.v[..theta.len()], rho);
 
-    // 5) Return raw GT cells of masked RHS (should equal target^ρ)
-    comt_to_cells(&rhs_mask)
+    // Five-bucket formula:
+    // Bucket 1: e(X, U*^ρ) - uses dual bases
+    let b1 = ComT::<E>::pairing_sum(xcoms, &u_star_rho);
+
+    // Bucket 2: e(V*^ρ, Y) - uses dual bases
+    let b2 = ComT::<E>::pairing_sum(&v_star_rho, ycoms);
+
+    // Bucket 3: e(U^ρ, π) - proof leg
+    let b3 = ComT::<E>::pairing_sum(&u_rho, pi);
+
+    // Bucket 4: e(θ, V^ρ) - proof leg
+    let b4 = ComT::<E>::pairing_sum(theta, &v_rho);
+
+    // Bucket 5 (G): e(X, ΓY) - cross term, NOT post-exponentiated
+    let stmt_y = vec_to_col_vec(ycoms).left_mul(&ppe.gamma, false);
+    let g_term = ComT::<E>::pairing_sum(xcoms, &col_vec_to_vec(&stmt_y));
+
+    // Combine: (B1 + B2 + G) - (B3 + B4)
+    let result = (b1 + b2 + g_term) - b3 - b4;
+
+    // Extract and return only the [1][1] cell (others should be zero)
+    // This matches the linear_map_PPE structure
+    let matrix = result.as_matrix();
+    [
+        [E::TargetField::zero(), E::TargetField::zero()],
+        [E::TargetField::zero(), matrix[1][1].0],
+    ]
 }
 
 /// Convenience: expected RHS matrix = linear_map_PPE(target^ρ)

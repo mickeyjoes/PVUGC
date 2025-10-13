@@ -31,7 +31,10 @@ fn test_determinism_different_proofs_same_statement() {
     // must produce the same KEM key M
     
     let mut rng = test_rng();
-    let crs = CRS::<E>::generate_crs(&mut rng);
+    // Use CRSWithDuals for proper randomness cancellation
+    use groth_sahai::generator::CRSWithDuals;
+    let crs_with_duals = CRSWithDuals::<E>::generate_wi_with_duals(&mut rng);
+    let crs = &crs_with_duals.crs;
     
     // Create a statement (simplified PPE for testing)
     let g1_elem = G1Affine::rand(&mut rng);
@@ -68,6 +71,8 @@ fn test_determinism_different_proofs_same_statement() {
             &att.equ_proofs[0].pi,
             &att.equ_proofs[0].theta,
             rho,
+            &crs_with_duals.u_star,  // Pass dual bases
+            &crs_with_duals.v_star,  // Pass dual bases
         );
         masked_matrices.push(masked_matrix);
     }
@@ -88,7 +93,9 @@ fn test_randomness_independence() {
     // and don't interfere with each other
     
     let mut rng = test_rng();
-    let crs = CRS::<E>::generate_crs(&mut rng);
+    use groth_sahai::generator::CRSWithDuals;
+    let crs_with_duals = CRSWithDuals::<E>::generate_wi_with_duals(&mut rng);
+    let crs = &crs_with_duals.crs;
     
     let g1_elem = G1Affine::rand(&mut rng);
     let g2_elem = G2Affine::rand(&mut rng);
@@ -122,6 +129,8 @@ fn test_randomness_independence() {
             &attestation.equ_proofs[0].pi,
             &attestation.equ_proofs[0].theta,
             *rho,
+            &crs_with_duals.u_star,
+            &crs_with_duals.v_star,
         );
         masked_matrices.push(masked_matrix);
     }
@@ -144,7 +153,9 @@ fn test_wrong_public_input_rejection() {
     // (But attestations for the same statement would produce the same M)
     
     let mut rng = test_rng();
-    let crs = CRS::<E>::generate_crs(&mut rng);
+    use groth_sahai::generator::CRSWithDuals;
+    let crs_with_duals = CRSWithDuals::<E>::generate_wi_with_duals(&mut rng);
+    let crs = &crs_with_duals.crs;
     
     // Create two different statements
     let g1_elem1 = G1Affine::rand(&mut rng);
@@ -186,6 +197,8 @@ fn test_wrong_public_input_rejection() {
         &attestation1.equ_proofs[0].pi,
         &attestation1.equ_proofs[0].theta,
         rho,
+        &crs_with_duals.u_star,
+        &crs_with_duals.v_star,
     );
     
     // Use canonical masked verifier for attestation2 (different statement)
@@ -197,6 +210,8 @@ fn test_wrong_public_input_rejection() {
         &attestation2.equ_proofs[0].pi,
         &attestation2.equ_proofs[0].theta,
         rho,
+        &crs_with_duals.u_star,
+        &crs_with_duals.v_star,
     );
     
     // Key insight: attestation for wrong statement gives different matrix
@@ -212,7 +227,9 @@ fn test_identity_element_protection() {
     // (prevents trivial KEM keys)
     
     let mut rng = test_rng();
-    let crs = CRS::<E>::generate_crs(&mut rng);
+    use groth_sahai::generator::CRSWithDuals;
+    let crs_with_duals = CRSWithDuals::<E>::generate_wi_with_duals(&mut rng);
+    let crs = &crs_with_duals.crs;
     
     // Create a degenerate statement where target = 1
     let ppe_degenerate = PPE::<E> {
@@ -239,6 +256,8 @@ fn test_identity_element_protection() {
         &attestation.equ_proofs[0].pi,
         &attestation.equ_proofs[0].theta,
         rho,
+        &crs_with_duals.u_star,
+        &crs_with_duals.v_star,
     );
     
     // Test that identity target produces identity masked matrix
@@ -295,6 +314,8 @@ fn test_identity_element_protection() {
         &non_identity_attestation.equ_proofs[0].pi,
         &non_identity_attestation.equ_proofs[0].theta,
         rho,
+        &crs_with_duals.u_star,
+        &crs_with_duals.v_star,
     );
     
     // Convert non-identity matrix to ComT for KDF
@@ -314,7 +335,9 @@ fn test_commitment_binding() {
     // for the same commitment (binding property)
     
     let mut rng = test_rng();
-    let crs = CRS::<E>::generate_crs(&mut rng);
+    use groth_sahai::generator::CRSWithDuals;
+    let crs_with_duals = CRSWithDuals::<E>::generate_wi_with_duals(&mut rng);
+    let crs = &crs_with_duals.crs;
     
     // Create commitment to a value
     let value1 = G1Affine::rand(&mut rng);
@@ -343,7 +366,9 @@ fn test_proof_substitution_attack() {
     // This is the core PVUGC security property: same statement → same matrix, different statement → different matrix
     
     let mut rng = test_rng();
-    let crs = CRS::<E>::generate_crs(&mut rng);
+    use groth_sahai::generator::CRSWithDuals;
+    let crs_with_duals = CRSWithDuals::<E>::generate_wi_with_duals(&mut rng);
+    let crs = &crs_with_duals.crs;
     
     // Create two different statements (different circuits)
     let g1_elem1 = G1Affine::rand(&mut rng);
@@ -385,6 +410,8 @@ fn test_proof_substitution_attack() {
         &attestation1.equ_proofs[0].pi,
         &attestation1.equ_proofs[0].theta,
         rho,
+        &crs_with_duals.u_star,
+        &crs_with_duals.v_star,
     );
     
     let masked_matrix2 = masked_verifier_matrix_canonical(
@@ -395,6 +422,8 @@ fn test_proof_substitution_attack() {
         &attestation2.equ_proofs[0].pi,
         &attestation2.equ_proofs[0].theta,
         rho,
+        &crs_with_duals.u_star,
+        &crs_with_duals.v_star,
     );
     
     // Test substitution attack: try to use attestation1 (for statement1) with PPE2 (for statement2)
@@ -406,6 +435,8 @@ fn test_proof_substitution_attack() {
         &attestation1.equ_proofs[0].pi,
         &attestation1.equ_proofs[0].theta,
         rho,
+        &crs_with_duals.u_star,
+        &crs_with_duals.v_star,
     );
     
     // PVUGC Security Test: Verify statement-specific behavior
@@ -456,7 +487,9 @@ fn test_multi_share_threshold_security() {
     // Test that in k-of-k threshold, missing any share prevents completion
     
     let mut rng = test_rng();
-    let crs = CRS::<E>::generate_crs(&mut rng);
+    use groth_sahai::generator::CRSWithDuals;
+    let crs_with_duals = CRSWithDuals::<E>::generate_wi_with_duals(&mut rng);
+    let crs = &crs_with_duals.crs;
     
     let g1_elem = G1Affine::rand(&mut rng);
     let g2_elem = G2Affine::rand(&mut rng);
@@ -496,6 +529,8 @@ fn test_multi_share_threshold_security() {
             &attestation.equ_proofs[0].pi,
             &attestation.equ_proofs[0].theta,
             rho_i,
+            &crs_with_duals.u_star,
+            &crs_with_duals.v_star,
         );
         
         encrypted_shares.push((i, share, rho_i, masked_matrix_i));
