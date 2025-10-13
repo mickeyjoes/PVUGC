@@ -53,9 +53,9 @@ fn comt_to_cells<E: Pairing>(m: &ComT<E>) -> [[E::TargetField; 2]; 2] {
 /// 
 /// IMPORTANT:
 /// - We DO NOT scale commitments X/Y by rho.
-/// - We DO scale CRS constants a,b and primaries U,V by rho.
-/// - We post-exponentiate the γ cross ComT to rho.
-/// - Optionally, you can add dual-helper buckets by pairing with U*^rho, V*^rho (not needed for equality).
+/// - We DO scale PPE constants a,b by rho (these act as instance-dependent bases).
+/// - We DO scale CRS primaries U,V by rho for proof legs.
+/// - The γ cross ComT is NOT post-exponentiated (critical for randomness cancellation).
 pub fn masked_verifier_matrix_canonical<E: Pairing>(
     ppe: &PPE<E>,
     crs: &CRS<E>,
@@ -65,49 +65,33 @@ pub fn masked_verifier_matrix_canonical<E: Pairing>(
     theta: &[Com1<E>],
     rho: E::ScalarField,
 ) -> [[E::TargetField; 2]; 2] {
-    // 1) Linear legs with rho on CRS constants, NOT on commitments
-    // PPE should now be 2-variable to match GS CRS size
+    // 1) Linear legs with rho on PPE constants (instance-dependent bases)
     let i1_a      = Com1::<E>::batch_linear_map(&ppe.a_consts);
     let i2_b      = Com2::<E>::batch_linear_map(&ppe.b_consts);
     let i1_a_rho  = scale_com1::<E>(&i1_a, rho);
     let i2_b_rho  = scale_com2::<E>(&i2_b, rho);
 
-    // Use commitments in the order produced by the prover
     let a_y_rho   = ComT::<E>::pairing_sum(&i1_a_rho, ycoms);     // e(a^ρ, Y)
     let x_b_rho   = ComT::<E>::pairing_sum(xcoms, &i2_b_rho);     // e(X, b^ρ)
 
-    // 2) γ cross leg: compute unmasked, then ^ρ on GT cells (post-exp)
-    // PPE should now be 2-variable to match GS CRS size
-    let stmt_y    = vec_to_col_vec(ycoms).left_mul(&ppe.gamma, false);  // Γ·Y
+    // 2) γ cross leg: compute unmasked, DO NOT post-exponentiate
+    // This is the key fix - the cross term should not be raised to rho
+    let stmt_y    = vec_to_col_vec(ycoms).left_mul(&ppe.gamma, false);
     let cross     = ComT::<E>::pairing_sum(xcoms, &col_vec_to_vec(&stmt_y)); // e(X, ΓY)
-    let cross_rho = comt_pow_cells::<E>(&cross, rho);                    // e(X, ΓY)^ρ
 
     // 3) Proof legs with rho on CRS primaries (U,V), NOT on π/θ
-    // GS CRS is fixed at 2 elements, matching PPE size
     let u_rho     = scale_com1::<E>(&crs.u, rho);
     let v_rho     = scale_com2::<E>(&crs.v, rho);
     
-    // Use π and θ in the same order they were produced by the prover
     let upi_rho   = ComT::<E>::pairing_sum(&u_rho, pi);        // e(U^ρ, π)
     let thv_rho   = ComT::<E>::pairing_sum(theta, &v_rho);     // e(θ, V^ρ)
 
-    // 4) Build masked cross leg as ComT
-    let cross_rho_comt = ComT::<E>::from(vec![
-        vec![
-            PairingOutput::<E>(cross_rho[0][0]),
-            PairingOutput::<E>(cross_rho[0][1]),
-        ],
-        vec![
-            PairingOutput::<E>(cross_rho[1][0]),
-            PairingOutput::<E>(cross_rho[1][1]),
-        ],
-    ]);
-
-    // 5) Reconstruct masked verifier LHS and subtract masked proof legs
-    let lhs_mask = (a_y_rho + x_b_rho) + cross_rho_comt;
+    // 4) Reconstruct: (a_y^ρ + x_b^ρ + cross) - upi^ρ - thv^ρ
+    // With cross NOT post-exponentiated, randomness cancels properly
+    let lhs_mask = (a_y_rho + x_b_rho) + cross;
     let rhs_mask = lhs_mask - upi_rho - thv_rho;
 
-    // 6) Return raw GT cells of masked RHS (should equal target^ρ)
+    // 5) Return raw GT cells of masked RHS (should equal target^ρ)
     comt_to_cells(&rhs_mask)
 }
 
